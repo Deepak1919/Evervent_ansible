@@ -1,0 +1,154 @@
+##################################################
+# DO Community Playbooks: LEMP on Ubuntu 18.04
+##################################################
+---
+- hosts: all
+  become: true
+  vars_files:
+    - vars/default.yml
+
+  tasks:
+    - name: Install Prerequisites
+      apt: name={{ item }} update_cache=yes state=latest force_apt_get=yes
+      loop: [ 'aptitude' ]
+
+    - name: Install LEMP Packages
+      apt: name={{ item }} update_cache=yes state=latest
+      loop: [ 'nginx', 'mysql-server', 'python3-pymysql', 'php7.4' , 'php7.4-fpm', 'php7.4-mysql' , 'php7.4-bcmath' , ' php7.4-bz2' , 'php7.4-mbstring' , 'php7.4-intl' , 'php7.4-gd' , 'php7.4-zip' , 'php7.4-common' , 'php7.4-soap' , 'php7.4-xml']
+    
+# Nginx Configuration
+    
+    - name: Sets Nginx_Default conf file
+      copy:
+        src: "files/default"
+        dest: "/etc/nginx/sites-available/default"
+      notify: Reload Nginx
+        
+    - name: Sets Nginx_conf conf file
+      copy:
+        src: "files/nginx.conf"
+        dest: "/etc/nginx/nginx.conf"
+      notify: Reload Nginx
+
+    - name: Sets Nginx dev conf file
+      become: true
+      template:
+        src: "{{ item }}"
+        dest: "/etc/nginx/conf.d/"
+      loop: [ 'files/conf/dev.conf','files/conf/deverp.conf','files/conf/devcrm.conf' ,'files/conf/devpos.conf','files/conf/devstatic.conf']
+      notify: Reload Nginx
+
+    - name: Create Folder
+      file: 
+        path: "{{ item }}"
+        state: directory
+      loop: ['/etc/nginx/ssl','/var/www/dev_{{ http_conf }}','/var/www/GIT/dev','/var/log/php-fpm']
+
+    - name: Sets SSL_certificate conf file
+      copy:
+        src: "{{ item }}"
+        dest: "/etc/nginx/ssl/"
+      loop: ['files/bundle.crt','files/myserver.key'] 
+      notify: Reload Nginx   
+# UFW Configuration
+    - name: "UFW - Allow HTTP on port {{ http_port }}"
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ['{{ https_port }}','{{ http_port }}','{{ ssh_port }}']
+
+
+#Git Clone with dev
+    - name: Clone A Github Repository With Ansible
+      git:
+        repo: "https://{{ git_username }}:{{ git_key }}@{{ Repo }}"
+        dest: "/var/www/GIT/dev/"
+        version: Development
+        clone: yes
+        update: yes
+
+#Code Rsync 
+    - name:  Synchronization using rsync protocol on delegate host (push)
+      ansible.posix.synchronize:
+        src: "/var/www/GIT/dev/"
+        dest: "/var/www/dev_{{ http_conf }}/"
+        rsync_opts:
+             - "--exclude='.git'"
+             - "--exclude='app.php'"
+             - "--exclude='app_local.php'"
+             - "--exclude='logs'"
+             - "--exclude='tmp'"
+             - "--exclude='webroot'"
+      delegate_to: server1
+
+    - name: Add enabled Nginx site to /etc/hosts
+      become: true
+      lineinfile:
+        dest: /etc/hosts
+        regexp: "{{ http_host }}\t{{ erp_host }}\t{{ crm_host }}\t{{ pos_host }}\t{{ static_host }}"
+        line: "127.0.0.1 {{ item }}"
+        state: present
+      loop: [ '{{ http_host }}','{{ erp_host }}','{{ crm_host }}','{{ pos_host }}','{{ static_host }}'] 
+
+# PHP 
+    - name: Sets PHP conf file
+      copy:
+        src: "{{ item }}"
+        dest: "/etc/php/7.4/fpm/"
+      loop: [ 'php/php-fpm.conf','php/php.ini']
+
+    - name: Sets PHP bootstrap file
+      copy:
+        src: "php/bootstrap.php"
+        dest: "{{ item }}"
+      loop: ['/var/www/dev_{{ http_conf }}/html/vendor/cakephp/cakephp/config/','/var/www/dev_{{ http_conf }}/erp/html/vendor/cakephp/cakephp/config/','/var/www/dev_{{ http_conf }}/crm/html/vendor/cakephp/cakephp/config/','/var/www/dev_{{ http_conf }}/pos/html/vendor/cakephp/cakephp/config/']  
+   
+    - name: Sets PHP www.conf file
+      copy:
+        src: "php/conf/www.conf"
+        dest: "/etc/php/7.4/fpm/pool.d/"
+    - name: Create Folder
+      file: 
+        path: "{{ item }}"
+        state: directory
+        owner: "www-data"
+        group: "www-data"
+        mode: "0777"        
+      loop: ['/var/www/dev_{{ http_conf }}/html/logs','/var/www/dev_{{ http_conf }}/erp/html/logs','/var/www/dev_{{ http_conf }}/crm/html/logs','/var/www/dev_{{ http_conf }}/pos/html/logs','/var/www/dev_{{ http_conf }}/html/tmp','/var/www/dev_{{ http_conf }}/erp/html/tmp','/var/www/dev_{{ http_conf }}/crm/html/tmp','/var/www/dev_{{ http_conf }}/pos/html/tmp']
+
+    # Config and webroot 
+    - name: Sets html_conf and webroot folder
+      copy:
+        src: "files/Code/html/"
+        dest: "/var/www/dev_{{ http_conf }}/html/"
+      notify: Reload Nginx
+
+    - name: Sets Erp_conf and webroot folder
+      copy:
+        src: "files/Code/erp/"
+        dest: "/var/www/dev_{{ http_conf }}/erp/html/"
+      notify: Reload Nginx
+
+    - name: Sets Pos_conf and webroot folder
+      copy:
+        src: "files/Code/pos/"
+        dest: "/var/www/dev_{{ http_conf }}/pos/html/"
+      notify: Reload Nginx
+
+    - name: Sets Crm_conf and webroot folder
+      copy:
+        src: "files/Code/crm/"
+        dest: "/var/www/dev_{{ http_conf }}/crm/html/"
+      notify: Reload Nginx  
+
+  handlers:
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Restart php
+      service:
+        name: php7.4-fpm
+        state: restarted
